@@ -444,7 +444,7 @@ void visualizer() {
 
 // Function that is run on initial boot.
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
   Serial.println("Booting");
   delay(1000); // delay 1 seconds on startup
   setStripLength();
