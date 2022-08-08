@@ -2,7 +2,7 @@
 #include <FastLED.h>
 #include <arduinoFFT.h>
 
-#define MIC_IN 34 // Use A0 for mic input
+#define MIC_IN 36 // Use A0 for mic input
 #define LED_TYPE WS2812B
 #define COLOR_ORDER GRB
 #define BRIGHTNESS 255
@@ -282,8 +282,8 @@ void displayUpdate(int band, int barHeight) {
         leds[ledNumber] = CHSV(color, 255, 0);
       }
     }
-    FastLED.show();
-    delayMicroseconds(75);
+    //FastLED.show();
+    //delayMicroseconds(75);
   }
 }
 
@@ -300,14 +300,14 @@ void blink() {
     // }
     // leds[i] = CRGB::Red;
   }
-  FastLED.show();
-  delayMicroseconds(75);
+  //FastLED.show();
+  //delayMicroseconds(75);
   // delay(500);
   for (int i = 0; i < g_num_leds; i++) {
     leds[i] = CRGB::Black;
   }
-  FastLED.show();
-  delayMicroseconds(75);
+  //FastLED.show();
+  //delayMicroseconds(75);
   // delay(500);
 }
 
@@ -447,9 +447,9 @@ void samples() {
     // if (barHeight > peak[band]) {
     //   peak[band] = min(getStripLength(band), barHeight);
     // }
-
+    Serial.printf("Going to displayUpdate. \n");
     displayUpdate(band, barHeight);
-    // blink();
+     //blink();
 
     // Save oldBarHeights for averaging later
     oldBarHeights[band] = barHeight;
@@ -465,8 +465,8 @@ void samples() {
 
   // Used in some of the patterns
   // EVERY_N_MILLISECONDS(10) { colorTimer++; }
-
-  // FastLED.show();
+   Serial.printf("Done with display. \n");
+   FastLED.show();
 }
 
 void fillDisplay() {
@@ -488,7 +488,7 @@ void visualizer() {
   // Update Display
   // displayUpdate();
 
-  // FastLED.show();
+//   FastLED.show();
 }
 
 // Function that is run on initial boot.
