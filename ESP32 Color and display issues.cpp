@@ -1,75 +1,55 @@
 #define FASTLED_ALLOW_INTERRUPTS 0
+#include "driver/adc.h"
 #include <FastLED.h>
 #include <arduinoFFT.h>
 
-#define MIC_IN 36 // Use A0 for mic input
-#define LED_TYPE WS2812B
-#define COLOR_ORDER GRB
-#define BRIGHTNESS 255
-#define DATA_PIN 2
-#define TOTAL_STRIPS 63
-#define NUM_LEDS 882
-#define BRIHTNESS 255
-#define SAMPLES 1024
-#define SAMPLIN_FREQ 40000
-#define AMPLITUDE                                                              \
-  10000 // Depending on your audio source level, you may need to alter
-        //   this
-        // value. Can be used as a 'sensitivity' control.
-#define COLOR_ORDER GRB // If colours look wrong, play with this
-#define CHIPSET WS2812B // LED strip type
-#define MAX_MILLIAMPS                                                          \
-  2000 // Careful with the amount of power here if running off USB port
-#define LED_VOLTS 5 // Usually 5 or 12
-#define NUM_BANDS                                                              \
-  16 // To change this, you will need to change the bunch of if statements
-// describing the mapping from bins to bands
-#define NOISE 500 // Used as a crude noise filter, values below this are
-// ignored
-#define BAR_WIDTH                                                              \
-  (TOTAL_STRIPS / (NUM_BANDS - 1)) // If width >= 8 light 1 LED width per
-// bar,
-// >= 16 light 2 LEDs width bar etc
-//   true // Set to false if you're LEDS are connected end to end, true if
-// serpentine
+// #include "ESP32_fft.h"
 
 // Adjust these values to get the visualizer to show the way you want it to
 constexpr int g_brightness{255};
-//
-
-// Shouldn't need to adjust the values below here
-constexpr int g_data_pin{2};   // Pin that communicates with the leds.
-constexpr int g_samples{1024}; // Amount of samples to take for arduinoFFT
-                               // to
-// handle, must be power of 2.
+constexpr int g_data_pin{2};     // Pin that communicates with the leds.
+const uint32_t g_samples{1024};  // Amount of samples to take for arduinoFFT
+                                 // to handle, must be power of 2.
 constexpr int g_totalStrips{63}; // Total amount of strips in use.
 constexpr int g_num_leds{882};   // Combined total of leds.
 constexpr int g_longStrips{9};   // Amount of long strips.
 constexpr int g_shortStrips{54}; // Amount of short strips.
-constexpr int g_sampling_freq{8000};
-constexpr int g_amplitude{10000};
-constexpr int g_noise{500};
+constexpr int g_sampling_freq{40000};
+constexpr int g_amplitude{2000};
+//Band Filters:
+constexpr int g_noise_overall{5000};
+constexpr int g_noise_band1{17000};
+constexpr int g_noise_band2{15000};
+constexpr int g_noise_band3{30000};
+constexpr int g_noise_band4{40000};
+constexpr int g_noise_band5{40000};
+constexpr int g_noise_band6{12000};
+
 constexpr int g_num_bands{16};
 constexpr int g_bar_width{4};
 // constexpr int g_bar_width{g_totalStrips / (g_num_bands - 1)};
 
+TaskHandle_t Task1;
+TaskHandle_t Task2;
 //
 unsigned int sampling_period_us;
-byte peak[] = {0, 0, 0, 0, 0, 0, 0, 0,
-               0, 0, 0, 0, 0, 0, 0, 0}; // The length of these arrays must be
-                                        // >= NUM_BANDS
-int oldBarHeights[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-int bandValues[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-unsigned long newTime;
+byte peak[g_num_bands] = {0}; // The length of these arrays must be
+                              // >= NUM_BANDS
+int oldBarHeights[g_num_bands] = {0};
+int bandValues[g_num_bands] = {0};
 
-double vReal[g_samples];
-double vImag[g_samples];
+bool updateDisplay;
 
-// int color{0};
-uint8_t colorTimer{0};
+auto vReal = new float[g_samples];
+auto vImag = new float[g_samples];
+
 CRGB leds[g_num_leds]; // Create LED Object
 // Creating the arduinoFFT object and passing what variables it should use.
-arduinoFFT FFT = arduinoFFT(vReal, vImag, g_samples, g_sampling_freq);
+auto FFT = ArduinoFFT<float>(vReal, vImag, g_samples, g_sampling_freq);
+
+// Creating the ESPFFT object and passing what variables it should use.
+// auto FFT =
+//     ESP_fft(g_samples, g_sampling_freq, FFT_REAL, FFT_FORWARD, vReal, vReal);
 
 struct strips {
   int length;
@@ -158,8 +138,7 @@ bool checkReverseLed(bool reverseLeds, int stripNumber) {
 }
 
 // Gives each individual led in the strips their own physical number (the
-// number
-// between 0 - 886)
+// number between 0 - 886)
 void initializeStrips() {
   static int ledPhysNumber{0};
   bool reverseLeds{};
@@ -175,8 +154,6 @@ void initializeStrips() {
     }
   }
 }
-
-void tempStripLength() { Strips[0].length = 4; }
 
 // Gives each led strip the length or amount of leds that strip has
 void setStripLength() {
@@ -254,16 +231,7 @@ void showProgramCleanup(long delayTime) {
   FastLED.show();
 }
 
-void rainbowBars(int band, int barHeight) {
-  int xStart = g_bar_width * band;
-  for (int i = xStart; i < xStart + g_bar_width || i < 63; i++) {
-    for (int j = getStripLength(i); j >= getStripLength(i) - barHeight; j--) {
-      leds[getLedNumber(i, j)] =
-          CHSV((i / g_bar_width) * (255 / g_num_bands), 255, 155);
-    }
-  }
-}
-
+// Sets what leds to light up and what color.
 void displayUpdate(int band, int barHeight) {
   int xStart = g_bar_width * band;
   int color = 0;
@@ -271,22 +239,22 @@ void displayUpdate(int band, int barHeight) {
     if (i == 63) {
       return;
     }
+    map(barHeight, 0, 10, 0, getStripLength(i));
+    if (i > 0) {
+      color = (255 / g_totalStrips) * i;
+    }
     for (int j = 0; j < getStripLength(i); j++) {
       int ledNumber = getLedNumber(i, j);
-      if (j > 0) {
-        color = 255 / j;
-      }
       if (j <= barHeight) {
-        leds[ledNumber] = CHSV(color, 255, 150);
+        leds[ledNumber] = CHSV(color, 255, 255);
       } else {
         leds[ledNumber] = CHSV(color, 255, 0);
       }
     }
-    //FastLED.show();
-    //delayMicroseconds(75);
   }
 }
 
+// Test function to make all the leds blink.
 void blink() {
   int ledColor = 0;
   for (int i = 0; i < g_num_leds; i++) {
@@ -294,151 +262,25 @@ void blink() {
       ledColor = 255 / i;
     }
     leds[i] = CHSV(ledColor, 255, 150);
-    // ledColor++;
-    // if (ledColor == 255) {
-    //   ledColor = 0;
-    // }
-    // leds[i] = CRGB::Red;
   }
-  //FastLED.show();
-  //delayMicroseconds(75);
-  // delay(500);
+  FastLED.show();
   for (int i = 0; i < g_num_leds; i++) {
     leds[i] = CRGB::Black;
   }
-  //FastLED.show();
-  //delayMicroseconds(75);
-  // delay(500);
+  FastLED.show();
 }
 
-void samples() {
-  // Reset bandValues[]
-  for (int i = 0; i < g_num_bands; i++) {
-    bandValues[i] = 0;
-  }
-
-  Serial.println("Starting getting samples");
-  // Sample the audio pin
-  for (int i = 0; i < g_samples; i++) {
-    newTime = micros();
-    vReal[i] = analogRead(MIC_IN); // A conversion takes about 9.7uS on an
-    // ESP32
-    vImag[i] = 0;
-    while ((micros() - newTime) < sampling_period_us) { /* chill */
-    }
-  }
-
-  Serial.println("Going to FFT");
-  // Compute FFT
-  FFT.DCRemoval();
-  FFT.Windowing(FFT_WIN_TYP_HAMMING, FFT_FORWARD);
-  FFT.Compute(FFT_FORWARD);
-  FFT.ComplexToMagnitude();
-
-  // Analyse FFT results
-  for (int i = 2; i < (g_samples / 2);
-       i++) { // Don't use sample 0 and only first SAMPLES/2 are usable. Each
-              // array element represents a frequency bin and its value the
-              // amplitude.
-    // Serial.print("FFT Data: ");
-    // Serial.println(vReal[i]);
-    if (vReal[i] > g_noise) { // Add a crude noise filter
-
-      if (g_num_bands == 8) {
-        // 8 bands, 12kHz top band
-        if (i <= 3)
-          bandValues[0] += (int)vReal[i];
-        if (i > 3 && i <= 6)
-          bandValues[1] += (int)vReal[i];
-        if (i > 6 && i <= 13)
-          bandValues[2] += (int)vReal[i];
-        if (i > 13 && i <= 27)
-          bandValues[3] += (int)vReal[i];
-        if (i > 27 && i <= 55)
-          bandValues[4] += (int)vReal[i];
-        if (i > 55 && i <= 112)
-          bandValues[5] += (int)vReal[i];
-        if (i > 112 && i <= 229)
-          bandValues[6] += (int)vReal[i];
-        if (i > 229)
-          bandValues[7] += (int)vReal[i]; //
-      } else if (g_num_bands == 16) {
-        // 16 bands, 12kHz top band
-        // if (i <= 1)
-        //   bandValues[0] += (int)vReal[i];
-        // if (i > 0 && i <= 1)
-        //   bandValues[1] += (int)vReal[i];
-        // if (i > 1 && i <= 2)
-        //   bandValues[2] += (int)vReal[i];
-        // if (i > 2 && i <= 3)
-        //   bandValues[3] += (int)vReal[i];
-        // if (i > 3 && i <= 4)
-        //   bandValues[4] += (int)vReal[i];
-        // if (i > 4 && i <= 5)
-        //   bandValues[5] += (int)vReal[i];
-        // if (i > 5 && i <= 8)
-        //   bandValues[6] += (int)vReal[i];
-        // if (i > 8 && i <= 11)
-        //   bandValues[7] += (int)vReal[i];
-        // if (i > 11 && i <= 15)
-        //   bandValues[8] += (int)vReal[i];
-        // if (i > 15 && i <= 21)
-        //   bandValues[9] += (int)vReal[i];
-        // if (i > 21 && i <= 29)
-        //   bandValues[10] += (int)vReal[i];
-        // if (i > 29 && i <= 40)
-        //   bandValues[11] += (int)vReal[i];
-        // if (i > 40 && i <= 56)
-        //   bandValues[12] += (int)vReal[i];
-        // if (i > 56 && i <= 79)
-        //   bandValues[13] += (int)vReal[i];
-        // if (i > 79 && i <= 110)
-        //   bandValues[14] += (int)vReal[i];
-        // if (i > 110)
-        //   bandValues[15] += (int)vReal[i];
-        if (i <= 2)
-          bandValues[0] += (int)vReal[i];
-        if (i > 2 && i <= 3)
-          bandValues[1] += (int)vReal[i];
-        if (i > 3 && i <= 5)
-          bandValues[2] += (int)vReal[i];
-        if (i > 5 && i <= 7)
-          bandValues[3] += (int)vReal[i];
-        if (i > 7 && i <= 9)
-          bandValues[4] += (int)vReal[i];
-        if (i > 9 && i <= 13)
-          bandValues[5] += (int)vReal[i];
-        if (i > 13 && i <= 18)
-          bandValues[6] += (int)vReal[i];
-        if (i > 18 && i <= 25)
-          bandValues[7] += (int)vReal[i];
-        if (i > 25 && i <= 36)
-          bandValues[8] += (int)vReal[i];
-        if (i > 36 && i <= 50)
-          bandValues[9] += (int)vReal[i];
-        if (i > 50 && i <= 69)
-          bandValues[10] += (int)vReal[i];
-        if (i > 69 && i <= 97)
-          bandValues[11] += (int)vReal[i];
-        if (i > 97 && i <= 135)
-          bandValues[12] += (int)vReal[i];
-        if (i > 135 && i <= 189)
-          bandValues[13] += (int)vReal[i];
-        if (i > 189 && i <= 264)
-          bandValues[14] += (int)vReal[i];
-        if (i > 264)
-          bandValues[15] += (int)vReal[i];
-      }
-    }
-  }
-
+// Gets the band values and translates them to what amount of leds per strip
+// should light up.
+void barHeightDisplay() {
+  unsigned long time{millis()};
   // Process the FFT data into bar heights
   for (int band = 0; band < g_num_bands; band++) {
     // Scale the bars for the display
+    // Serial.printf("BandValue: %d, Band: %d \n", bandValues[band], band);
     int barHeight = bandValues[band] / g_amplitude;
-    if (barHeight > getStripLength(band)) {
-      barHeight = (getStripLength(band));
-    }
+
+    constrain(barHeight, 0, 10);
 
     // Small amount of averaging between frames
     barHeight = ((oldBarHeights[band] * 1) + barHeight) / 2;
@@ -447,9 +289,10 @@ void samples() {
     // if (barHeight > peak[band]) {
     //   peak[band] = min(getStripLength(band), barHeight);
     // }
-    Serial.printf("Going to displayUpdate. \n");
+
     displayUpdate(band, barHeight);
-     //blink();
+
+    // blink();
 
     // Save oldBarHeights for averaging later
     oldBarHeights[band] = barHeight;
@@ -465,55 +308,161 @@ void samples() {
 
   // Used in some of the patterns
   // EVERY_N_MILLISECONDS(10) { colorTimer++; }
-   Serial.printf("Done with display. \n");
-   FastLED.show();
+  Serial.printf("Setting leds took %lu mS \n", (millis() - time));
+
+  // time = millis();
+  // FastLED.show();
+  // Serial.printf("Displaying leds took %lu mS \n", (millis() - time));
 }
 
-void fillDisplay() {
-  int height[16] = {0, 1, 3, 6, 4, 3, 8, 7, 1, 10, 8, 2, 1, 5, 9, 0};
-  for (int i = 0; i < 16; i++) {
-    displayUpdate(i, height[i]);
+// Adjusting the bars to the frequency ranges.
+void setBandValues() {
+  unsigned long time{millis()};
+  for (int i = 0; i < g_num_bands; i++) {
+    bandValues[i] = 0;
   }
-  FastLED.show();
+
+  // Compute FFT
+
+  time = millis();
+  // ESP32FFT Library commands:
+  // FFT.removeDC();
+  // FFT.hammingWindow();
+  // FFT.execute();
+  // FFT.complexToMagnitude();
+  //
+
+  // ArduinoFFT develop version commands:
+  FFT.dcRemoval();
+  FFT.windowing(FFTWindow::Hamming, FFTDirection::Forward);
+  FFT.compute(FFTDirection::Forward);
+  FFT.complexToMagnitude();
+  //
+
+  // ArduinoFFT master version commands:
+  // FFT.dcRemoval();
+  // FFT.windowing(FFT_WIN_TYP_HAMMING, FFT_FORWARD);
+  // FFT.compute(FFT_FORWARD);
+  // FFT.complexToMagnitude();
+  //
+
+  Serial.printf("FFT took %lu mS \n", (millis() - time));
+
+  // Analyse FFT results
+  time = millis();
+  for (int i = 2; i < (g_samples / 2); i++) {
+    // Don't use sample 0 and only first SAMPLES/2 are usable. Each
+    // array element represents a frequency bin and its value the amplitude.
+
+    //Serial.print("FFT Data: ");
+    //Serial.println(vReal[i]);
+    if (vReal[i] > g_noise_overall) { // Add a crude noise filter
+      // 16 bands, 12kHz top band
+      if (i > 13 && i <= 16 && vReal[i] > g_noise_band1)
+        bandValues[0] += (int)vReal[i];
+      if (i > 16 && i <= 20 && vReal[i] > g_noise_band2)
+        bandValues[1] += (int)vReal[i];
+      if (i > 20 && i <= 25 && vReal[i] > g_noise_band3)
+        bandValues[2] += (int)vReal[i];
+      if (i > 25 && i <= 31 && vReal[i] > g_noise_band4)
+        bandValues[3] += (int)vReal[i];
+      if (i > 31 && i <= 39 && vReal[i] > g_noise_band5)
+        bandValues[4] += (int)vReal[i];
+      if (i > 39 && i <= 48 && vReal[i] > g_noise_band6)
+        bandValues[5] += (int)vReal[i];
+      if (i > 48 && i <= 60)
+        bandValues[6] += (int)vReal[i];
+      if (i > 60 && i <= 74)
+        bandValues[7] += (int)vReal[i];
+      if (i > 74 && i <= 93)
+        bandValues[8] += (int)vReal[i];
+      if (i > 93 && i <= 115)
+        bandValues[9] += (int)vReal[i]*2;
+      if (i > 115 && i <= 144)
+        bandValues[10] += (int)vReal[i]*2;
+      if (i > 144 && i <= 179)
+        bandValues[11] += (int)vReal[i]*2;
+      if (i > 179 && i <= 223)
+        bandValues[12] += (int)vReal[i];
+      if (i > 223 && i <= 277)
+        bandValues[13] += (int)vReal[i];
+      if (i > 277 && i <= 345)
+        bandValues[14] += (int)vReal[i];
+      if (i > 345)
+        bandValues[15] += (int)vReal[i];
+    }
+  }
+  Serial.printf("Setting bands took %lu mS \n", (millis() - time));
+}
+
+// Getting the audio samples from the mic.
+void getSamples() {
+  // Reset bandValues[]
+  unsigned long newTime;
+  adc1_config_width(ADC_WIDTH_BIT_12);
+  adc1_config_channel_atten(ADC1_CHANNEL_6, ADC_ATTEN_11db);
+
+  Serial.println("Starting getting samples");
+  // Sample the audio pin
+  unsigned long time{millis()};
+
+  for (int i = 0; i < g_samples; i++) {
+    newTime = micros();
+    vReal[i] = adc1_get_raw(ADC1_CHANNEL_6);
+    // vReal[i] = analogRead(MIC_IN);
+    //Serial.print("Samples Data: ");
+    //Serial.println(vReal[i]);
+    vImag[i] = 0;
+    while ((micros() - newTime) < sampling_period_us) { /* chill */
+    }
+  }
+  Serial.printf("Getting samples took %lu mS \n", (millis() - time));
 }
 
 // Captures audio frequencies with the mic and calculates them with the
 // ArduinoFFT library.
+void visualizer(void *) {
+  for (;;) {
+    getSamples();
+    setBandValues();
+    barHeightDisplay();
+    updateDisplay = true;
+    delay(1);
+  }
+}
 
-void visualizer() {
-  // Collect Samples
-  // getSamples();
-  samples();
-  // blink();
-  // Update Display
-  // displayUpdate();
-
-//   FastLED.show();
+// Loop for addressing the leds through a different core.
+void printLeds(void *) {
+  unsigned long timer;
+  for (;;) {
+    // Serial.printf("Update Display Bool: %d \n", updateDisplay);
+    // if (updateDisplay == true) {
+    // timer = millis();
+    FastLED.show();
+    Serial.printf("Displaying leds took %lu mS \n", (millis() - timer));
+    updateDisplay = false;
+    delay(1);
+    // }
+  }
 }
 
 // Function that is run on initial boot.
 void setup() {
   Serial.begin(115200);
-  Serial.println("Booting");
-  // delay(1000); // delay 1 seconds on startup
-  // tempStripLength();
   setStripLength();
   initializeStrips();
-  FastLED.addLeds<LED_TYPE, DATA_PIN, COLOR_ORDER>(leds, NUM_LEDS)
+  FastLED.addLeds<WS2812B, g_data_pin, GRB>(leds, g_num_leds)
       .setCorrection(TypicalLEDStrip); // initializes LED strip
-  FastLED.setBrightness(BRIGHTNESS);   // global brightness
+  FastLED.setBrightness(g_brightness); // global brightness
   // showProgramCleanup(3000);
   sampling_period_us = round(1000000 * (1.0 / g_sampling_freq));
-  // visualizer();
+  xTaskCreatePinnedToCore(visualizer, "Visualizer", 10000, NULL, 1, &Task2, 0);
+  xTaskCreatePinnedToCore(printLeds, "PrintLeds", 10000, NULL, 1, &Task1, 1);
 }
 
-// The program loop, this function will constantly keep on running.
+// The program loop, this function is default, but gets deleted by the
+// vTaskDelete.
 void loop() {
-  // showProgramCleanup(3000);
-  // showProgramOrange(2, 1000);
-  // showProgramCleanup(3000);
-  // showProgram2by2Checkerboard(CRGB::Orange,CRGB::White,1000000);
-  // blink();
-  // fillDisplay();
-  visualizer();
+  // visualizer();
+  vTaskDelete(NULL);
 }
